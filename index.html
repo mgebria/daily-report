@@ -94,6 +94,7 @@ ul.plain li:last-child{border-bottom:0}
 #lightbox.on{display:flex}
 #lightbox img{max-width:100%;max-height:100%;border-radius:8px}
 .pics{display:flex;flex-wrap:wrap;gap:8px}
+.badge{display:inline-block;min-width:20px;margin-left:6px;padding:1px 6px;border-radius:10px;background:var(--accent);color:var(--accent-ink);font-size:12px;line-height:18px}
 .pic{position:relative;width:76px;height:76px}
 .pic img{width:100%;height:100%;object-fit:cover;border-radius:10px;display:block}
 .pic button{position:absolute;top:-6px;right:-6px;width:26px;height:26px;padding:0;border-radius:50%;font-size:16px;line-height:1;background:var(--ink);color:var(--bg);border:0}
@@ -143,6 +144,7 @@ ul.plain li:last-child{border-bottom:0}
   <nav class="seg" aria-label="გვერდები">
     <a href="#today" data-v="today">დღეს</a>
     <a href="#floors" data-v="floors">პროგრესი</a>
+    <a href="#issues" data-v="issues" id="tabIssues" hidden>ხარვეზები<span class="badge" id="issueBadge" hidden></span></a>
   </nav>
 
   <div class="note" id="banner" hidden></div>
@@ -162,6 +164,15 @@ ul.plain li:last-child{border-bottom:0}
 
   <section class="stack" id="v-floors" hidden>
     <div id="floorList" class="stack"></div>
+  </section>
+
+  <section class="stack" id="v-issues" hidden>
+    <button type="button" class="primary big" id="addIssueBtn">+ ხარვეზის დაფიქსირება</button>
+    <div class="seg" role="radiogroup" aria-label="ფილტრი">
+      <label><input type="radio" name="iFilter" value="open" checked>ღია</label>
+      <label><input type="radio" name="iFilter" value="fixed">გამოსწორებული</label>
+    </div>
+    <div id="issueList" class="stack"></div>
   </section>
 </div>
 
@@ -200,6 +211,26 @@ ul.plain li:last-child{border-bottom:0}
       <span class="msg" id="eMsg" role="status"></span>
       <button type="submit" class="primary big" id="eSave">შენახვა</button>
       <div id="myToday" class="stack"></div>
+    </form>
+
+    <!-- ხარვეზი -->
+    <form id="issueForm" class="stack" hidden>
+      <div class="card">
+        <div class="seg" role="radiogroup" aria-label="ბლოკი">
+          <label><input type="radio" name="iBlock" value="C" checked>ბლოკი C</label>
+          <label><input type="radio" name="iBlock" value="D">ბლოკი D</label>
+        </div>
+        <label>სართული<input type="number" id="iFloor" step="1" placeholder="მაგ. 8" required></label>
+        <label>რა არის პრობლემა<input type="text" id="iText" maxlength="300" placeholder="მაგ. მინა გატეხილია" required autocomplete="off"></label>
+        <div class="stack" style="gap:8px">
+          <label for="iPhoto">ფოტოები (არასავალდებულო)</label>
+          <div class="pics" id="iPics"></div>
+          <input type="file" id="iPhoto" accept="image/*" multiple>
+          <span class="sub" id="iPicNote"></span>
+        </div>
+      </div>
+      <span class="msg" id="iMsg" role="status"></span>
+      <button type="submit" class="primary big" id="iSave">შენახვა</button>
     </form>
 
     <!-- მენეჯერი: მართვა -->
@@ -264,7 +295,7 @@ window.APP_CONFIG = {
 "use strict";
 const CFG=window.APP_CONFIG||{};
 const TZ="Asia/Tbilisi", DOMAIN="obieqtis-dghiuri.app";
-const C={settings:"dl_settings",people:"dl_people",accounts:"dl_accounts",logins:"dl_logins",entries:"dl_entries",photos:"dl_photos",tasks:"dl_tasks"};
+const C={settings:"dl_settings",people:"dl_people",accounts:"dl_accounts",logins:"dl_logins",entries:"dl_entries",photos:"dl_photos",tasks:"dl_tasks",issues:"dl_issues",iphotos:"dl_issue_photos"};
 const $=s=>document.querySelector(s);
 function h(tag,props,...kids){
   const n=document.createElement(tag);
@@ -309,10 +340,11 @@ function errText(e){
 
 let auth=null, db=null, TS=null;
 const S={me:null,users:new Map(),settings:{site_name:"ობიექტის დღიური",deadline_hour:11},tasks:new Map(),
-  day:[],mine:[],pending:[],urls:new Map(),date:today(),view:"today",sheet:null,loaded:false,error:"",photos:[]};
+  day:[],mine:[],pending:[],issues:[],ifilter:"open",urls:new Map(),date:today(),view:"today",sheet:null,loaded:false,error:"",photos:[]};
 const isManager=()=>!!S.me&&S.me.role==="manager";
 const isForeman=()=>!!S.me&&S.me.role==="foreman";
 const isViewer=()=>!!S.me&&S.me.role==="viewer";
+const canIssues=()=>isManager()||isForeman();
 const nameOf=id=>(S.users.get(id)&&S.users.get(id).name)||"უცნობი";
 const isLate=()=>hourNow()>=S.settings.deadline_hour;
 const shownDay=()=>S.day.filter(e=>e.shown===true);
@@ -322,7 +354,8 @@ const col=n=>db.collection(n);
 let settingUp=false, authNote="";
 async function getSettings(){ const s=await col(C.settings).doc("main").get(); return s.exists?s.data():null; }
 async function showAuth(note){
-  S.me=null; S.loaded=false;
+  S.me=null; S.loaded=false; S.issues=[]; S.ifilter="open";
+  const fo=document.querySelector('input[name="iFilter"][value="open"]'); if(fo) fo.checked=true;
   $("#app").hidden=true; $("#sheet").hidden=true; $("#auth").hidden=false; document.body.style.overflow="";
   const t=note||authNote; authNote="";
   const an=$("#authNote"); an.hidden=!t; an.textContent=t||"";
@@ -399,6 +432,11 @@ function mapEntry(d){
     workers:x.workers,pct:x.pct,photos:x.photos||0,prev:x.prev==null?null:x.prev,material:x.material||"",late:!!x.late,reason:x.reason||"",
     shown:x.shown===undefined?null:x.shown,excused:x.excused==null?null:x.excused,at:x.at&&x.at.toMillis?x.at.toMillis():Date.now()};
 }
+function mapIssue(d){
+  const x=d.data()||{}, ms=t=>t&&t.toMillis?t.toMillis():null;
+  return {id:d.id,block:x.block,floor:x.floor,text:x.text||"",by:x.by,uid:x.uid,at:ms(x.at)||Date.now(),photos:x.photos||0,
+    status:x.status==="fixed"?"fixed":"open",fixedBy:x.fixedBy||null,fixedAt:ms(x.fixedAt)};
+}
 let reloading=false, again=false;
 async function reload(){
   if(!S.me) return;
@@ -409,16 +447,18 @@ async function reload(){
     try{
       const D=dayInt(S.date), ent=col(C.entries);
       const dayQ=isManager()?ent.where("day","==",D):ent.where("shown","==",true).where("day","==",D);
-      const [st,pp,tk,day,mine,pend]=await Promise.all([
+      const [st,pp,tk,day,mine,pend,iss]=await Promise.all([
         getSettings(), isViewer()?col(C.people).doc(S.me.id).get():col(C.people).get(), col(C.tasks).get(), dayQ.get(),
         isForeman()?ent.where("uid","==",S.me.uid).where("day","==",dayInt(today())).get():null,
-        isManager()?ent.where("shown","==",null).get():null]);
+        isManager()?ent.where("shown","==",null).get():null,
+        canIssues()?col(C.issues).get():null]);
       if(st) S.settings=st;
       S.users=new Map((pp.docs||(pp.exists?[pp]:[])).map(d=>[d.id,Object.assign({id:d.id},d.data())]));
       S.tasks=new Map(tk.docs.map(d=>[d.id,Object.assign({id:d.id},d.data())]));
       S.day=day.docs.map(mapEntry);
       S.mine=mine?mine.docs.map(mapEntry):[];
       S.pending=pend?pend.docs.map(mapEntry):[];
+      S.issues=iss?iss.docs.map(mapIssue):[];
       S.loaded=true; S.error="";
       const meP=S.users.get(S.me.id);
       if(!meP||meP.deleted){ reloading=false; kickOut("შენი ანგარიში წაშლილია."); return; }
@@ -439,11 +479,11 @@ async function ensureUrls(ids){
   if(!need.length) return;
   need.forEach(id=>pendingUrls.add(id));
   await Promise.all(need.map(async id=>{
-    try{ const s=await col(C.photos).doc(id).get(); S.urls.set(id,s.exists?(s.data().data||""):""); }
+    try{ const iss=id.startsWith("i:"), s=await col(iss?C.iphotos:C.photos).doc(iss?id.slice(2):id).get(); S.urls.set(id,s.exists?(s.data().data||""):""); }
     catch(_){ S.urls.set(id,""); }
     pendingUrls.delete(id);
   }));
-  renderToday();
+  renderToday(); renderIssues();
 }
 
 /* სამუშაოს ბოლო მდგომარეობის თავიდან დათვლა (წაშლის ან უარყოფის შემდეგ) */
@@ -455,7 +495,7 @@ async function recomputeTask(key){
 }
 
 /* ---------- ხატვა ---------- */
-function renderAll(){ renderChrome(); renderToday(); renderFloors(); renderSheet(); }
+function renderAll(){ renderChrome(); renderToday(); renderFloors(); renderIssues(); renderSheet(); }
 function renderChrome(){
   if(!S.me) return;
   $("#siteName").textContent=S.settings.site_name||"ობიექტის დღიური";
@@ -463,7 +503,11 @@ function renderChrome(){
   $("#role").textContent=S.me.name+" · "+ROLE[S.me.role];
   $("#manageBtn").hidden=!isManager();
   $("#addBtn").hidden=!isForeman();
-  $("#v-today").hidden=S.view!=="today"; $("#v-floors").hidden=S.view!=="floors";
+  if(S.view==="issues"&&!canIssues()) S.view="today";
+  $("#tabIssues").hidden=!canIssues();
+  const open=S.issues.filter(x=>x.status==="open").length, bd=$("#issueBadge");
+  bd.hidden=!open; bd.textContent=open;
+  $("#v-today").hidden=S.view!=="today"; $("#v-floors").hidden=S.view!=="floors"; $("#v-issues").hidden=S.view!=="issues";
   document.querySelectorAll("nav.seg a").forEach(a=>{ if(a.dataset.v===S.view) a.setAttribute("aria-current","page"); else a.removeAttribute("aria-current"); });
   const b=$("#banner"), t=S.error||(!S.loaded?"იტვირთება…":"");
   b.hidden=!t; b.textContent=t;
@@ -592,17 +636,59 @@ function renderFloors(){
   }
 }
 
+/* ---------- ხარვეზები ---------- */
+const dt=ms=>{ const d=new Date(ms), p=tp(d); return p.d+"."+p.m+" "+d.toLocaleTimeString("ka-GE",{timeZone:TZ,hour:"2-digit",minute:"2-digit",hour12:false}); };
+const issueKeys=x=>Array.from({length:Math.max(0,Math.min(MAXPH,x.photos||0))},(_,i)=>"i:"+x.id+"_"+i);
+async function setIssue(x,fixed,btn){
+  btn.disabled=true;
+  try{ await col(C.issues).doc(x.id).update(fixed?{status:"fixed",fixedBy:S.me.id,fixedAt:TS()}:{status:"open",fixedBy:null,fixedAt:null}); }
+  catch(_){ btn.disabled=false; btn.textContent="ვერ შეინახა"; return; }
+  await reload();
+}
+async function removeIssue(x){
+  const b=db.batch();
+  b.delete(col(C.issues).doc(x.id));
+  issueKeys(x).forEach(k=>b.delete(col(C.iphotos).doc(k.slice(2))));
+  await b.commit(); await reload();
+}
+function renderIssues(){
+  const box=$("#issueList"); if(!box) return; box.replaceChildren();
+  if(!S.loaded||!canIssues()) return;
+  const list=S.issues.filter(x=>x.status===S.ifilter).sort((a,b)=>S.ifilter==="open"?b.at-a.at:(b.fixedAt||0)-(a.fixedAt||0));
+  if(!list.length){ box.append(h("div",{class:"empty",text:S.ifilter==="open"?"ღია ხარვეზი არ არის.":"გამოსწორებული ხარვეზი ჯერ არ არის."})); return; }
+  const need=[];
+  for(const x of list){
+    const extra=[];
+    issueKeys(x).forEach((k,i)=>{ need.push(k); const url=S.urls.get(k);
+      if(url) extra.push(h("button",{type:"button",class:"thumb","aria-label":"ფოტო "+(i+1)+": გადიდება",onclick:()=>{$("#lightbox img").src=url;$("#lightbox").classList.add("on")}},h("img",{src:url,alt:"ფოტო "+(i+1),loading:"lazy"}))); });
+    if(x.status==="fixed") extra.push(h("span",{class:"tag good",text:"გამოსწორდა: "+nameOf(x.fixedBy)+(x.fixedAt?" · "+dt(x.fixedAt):"")}));
+    const act=h("button",{type:"button",class:"small"+(x.status==="open"?" primary":""),text:x.status==="open"?"გამოსწორდა":"ხელახლა გახსნა"});
+    act.onclick=()=>setIssue(x,x.status==="open",act);
+    extra.push(act);
+    if(isManager()) extra.push(delButton(()=>removeIssue(x)));
+    box.append(h("div",{class:"group"},
+      h("div",{class:"gh"},h("b",{text:place(x)})),
+      h("div",{class:"list"},h("div",{class:"entry"},
+        h("div",null,h("div",{class:"w",text:x.text}),h("div",{class:"sub",text:nameOf(x.by)+" · "+dt(x.at)})),
+        h("div",null),
+        h("div",{class:"extra"},extra)))));
+  }
+  ensureUrls(need);
+}
+
 /* ---------- ფანჯრები ---------- */
 let busy=false, wkSig="";
 function renderSheet(){
   if(S.sheet==="entry"&&!isForeman()) S.sheet=null;
   if(S.sheet==="manage"&&!isManager()) S.sheet=null;
+  if(S.sheet==="issue"&&!canIssues()) S.sheet=null;
   $("#sheet").hidden=!S.sheet; document.body.style.overflow=S.sheet?"hidden":"";
   if(!S.sheet) return;
-  $("#sheetTitle").textContent=S.sheet==="manage"?"მართვა":"ჩანაწერის დამატება";
+  $("#sheetTitle").textContent=S.sheet==="manage"?"მართვა":S.sheet==="issue"?"ხარვეზის დაფიქსირება":"ჩანაწერის დამატება";
   $("#entryForm").hidden=S.sheet!=="entry";
+  $("#issueForm").hidden=S.sheet!=="issue";
   $("#manage").hidden=S.sheet!=="manage";
-  if(S.sheet==="manage") renderManage(); else renderForm();
+  if(S.sheet==="manage") renderManage(); else if(S.sheet==="entry") renderForm(); else $("#iSave").disabled=ibusy;
 }
 const curBlock=()=>(document.querySelector('input[name="eBlock"]:checked')||{}).value||"";
 function renderForm(){
@@ -675,7 +761,7 @@ function renderManage(){
 }
 
 /* ---------- მოქმედებები ---------- */
-function route(){ const v=(location.hash||"#today").slice(1); S.view=v==="floors"?"floors":"today"; renderChrome(); }
+function route(){ const v=(location.hash||"#today").slice(1); S.view=["floors","issues"].includes(v)?v:"today"; renderChrome(); }
 window.addEventListener("hashchange",route);
 function setDate(d){ S.date=d; S.day=[]; renderToday(); reload(); }
 $("#dPrev").onclick=()=>setDate(shift(S.date,-1));
@@ -706,23 +792,29 @@ async function shrink(file){
   }
   throw new Error("too big");
 }
-function renderPics(){
-  const box=$("#pics"); box.replaceChildren();
-  S.photos.forEach((u,i)=>box.append(h("div",{class:"pic"},h("img",{src:u,alt:"ფოტო "+(i+1)}),
-    h("button",{type:"button","aria-label":"ფოტო "+(i+1)+" წაშლა",onclick:()=>{S.photos.splice(i,1);renderPics();}},"×"))));
-  $("#ePhoto").hidden=S.photos.length>=MAXPH;
-  $("#picNote").textContent=S.photos.length?S.photos.length+" / "+MAXPH:"მინიმუმ 1, მაქსიმუმ "+MAXPH+" ფოტო";
+function makePicker(inp,boxSel,note,msg,min){
+  const P={items:[]};
+  P.render=()=>{
+    const box=$(boxSel); box.replaceChildren();
+    P.items.forEach((u,i)=>box.append(h("div",{class:"pic"},h("img",{src:u,alt:"ფოტო "+(i+1)}),
+      h("button",{type:"button","aria-label":"ფოტო "+(i+1)+" წაშლა",onclick:()=>{P.items.splice(i,1);P.render();}},"×"))));
+    $(inp).hidden=P.items.length>=MAXPH;
+    $(note).textContent=P.items.length?P.items.length+" / "+MAXPH:(min?"მინიმუმ 1, მაქსიმუმ ":"მაქსიმუმ ")+MAXPH+" ფოტო";
+  };
+  P.clear=()=>{ P.items=[]; $(inp).value=""; P.render(); };
+  $(inp).onchange=async e=>{
+    const files=[...(e.target.files||[])], room=MAXPH-P.items.length;
+    e.target.value="";
+    let bad=0;
+    for(const f of files.slice(0,room)){ try{ P.items.push(await shrink(f)); }catch(_){ bad++; } }
+    P.render();
+    say(msg,bad?"ზოგი ფოტო ვერ წაიკითხა. სცადე JPG ან PNG.":files.length>room?"მაქსიმუმ "+MAXPH+" ფოტო. დანარჩენი არ დაემატა.":"",!bad&&files.length<=room);
+  };
+  P.render();
+  return P;
 }
-function clearPhoto(){ S.photos=[]; $("#ePhoto").value=""; renderPics(); }
-$("#ePhoto").onchange=async e=>{
-  const files=[...(e.target.files||[])], room=MAXPH-S.photos.length;
-  e.target.value="";
-  let bad=0;
-  for(const f of files.slice(0,room)){ try{ S.photos.push(await shrink(f)); }catch(_){ bad++; } }
-  renderPics();
-  say("#eMsg",bad?"ზოგი ფოტო ვერ წაიკითხა. სცადე JPG ან PNG.":files.length>room?"მაქსიმუმ "+MAXPH+" ფოტო. დანარჩენი არ დაემატა.":"",!bad&&files.length<=room);
-};
-renderPics();
+const EP=makePicker("#ePhoto","#pics","#picNote","#eMsg",1);
+const IP=makePicker("#iPhoto","#iPics","#iPicNote","#iMsg",0);
 
 $("#entryForm").addEventListener("submit",async ev=>{
   ev.preventDefault(); if(busy||!isForeman()) return;
@@ -732,26 +824,48 @@ $("#entryForm").addEventListener("submit",async ev=>{
   if(!block||!isFinite(floor)||!work){ say("#eMsg","შეავსე ბლოკი, სართული და სამუშაო.",false); return; }
   const late=isLate();
   if(late&&!reason){ say("#eMsg","ვადა გასულია. ჩაწერე დაგვიანების მიზეზი.",false); return; }
-  if(!S.photos.length){ say("#eMsg","დაურთე მინიმუმ 1 ფოტო.",false); return; }
+  if(!EP.items.length){ say("#eMsg","დაურთე მინიმუმ 1 ფოტო.",false); return; }
   busy=true; $("#eSave").disabled=true; say("#eMsg","ინახება…",true);
   try{
     const key=keyOf(block,floor,work), tRef=col(C.tasks).doc(key);
     const ts=await tRef.get(), prev=ts.exists?ts.data().pct:null;
     if(prev!=null&&pct<prev){ busy=false; say("#eMsg","პროცენტი ვერ იქნება წინაზე ("+prev+"%) ნაკლები. შესწორებისთვის მიმართე მენეჯერს.",false); renderSheet(); return; }
     const id=col(C.entries).doc().id, D=dayInt(today()), b=db.batch();
-    const pics=S.photos.slice(0,MAXPH);
+    const pics=EP.items.slice(0,MAXPH);
     pics.forEach((u,i)=>b.set(col(C.photos).doc(id+"_"+i),{uid:S.me.uid,data:u}));
     b.set(col(C.entries).doc(id),{author:S.me.id,uid:S.me.uid,task:key,block:block,floor:floor,work:work,day:D,workers:workers,pct:pct,prev:prev,
       material:material,late:late,reason:late?reason:"",shown:late?null:true,excused:null,at:TS(),photos:pics.length});
     if(!late) b.set(tRef,{pct:pct,lastEntry:id,block:block,floor:floor,work:work,by:S.me.id,day:D});
     await b.commit();
     pics.forEach((u,i)=>S.urls.set(id+"_"+i,u));
-    $("#eFloor").value="";$("#eWork").value="";$("#eWorkers").value="";$("#ePct").value="";$("#eMat").value="";$("#eReason").value="";clearPhoto();
+    $("#eFloor").value="";$("#eWork").value="";$("#eWorkers").value="";$("#ePct").value="";$("#eMat").value="";$("#eReason").value="";EP.clear();
     say("#eMsg",late?"გაგზავნილია მენეჯერთან დასადასტურებლად.":"შენახულია. შეგიძლია შემდეგი სამუშაო დაამატო.",true);
   }catch(e){
     say("#eMsg",e&&e.code==="permission-denied"?"ვერ შეინახა. შეამოწმე ტელეფონის საათი და თარიღი, ან ცოტა ხანში სცადე.":"ვერ შეინახა. შეამოწმე ინტერნეტი და სცადე თავიდან.",false);
   }
   busy=false; await reload();
+});
+
+let ibusy=false;
+$("#addIssueBtn").onclick=()=>{ S.sheet="issue"; say("#iMsg","",true); renderSheet(); };
+document.querySelectorAll('input[name="iFilter"]').forEach(r=>r.addEventListener("change",()=>{ S.ifilter=r.value; renderIssues(); }));
+$("#issueForm").addEventListener("submit",async ev=>{
+  ev.preventDefault(); if(ibusy||!canIssues()) return;
+  const block=(document.querySelector('input[name="iBlock"]:checked')||{}).value||"", floor=parseInt($("#iFloor").value,10), text=$("#iText").value.trim().slice(0,300);
+  if(!block||!isFinite(floor)||!text){ say("#iMsg","შეავსე ბლოკი, სართული და აღწერა.",false); return; }
+  ibusy=true; $("#iSave").disabled=true; say("#iMsg","ინახება…",true);
+  try{
+    const id=col(C.issues).doc().id, pics=IP.items.slice(0,MAXPH), b=db.batch();
+    pics.forEach((u,i)=>b.set(col(C.iphotos).doc(id+"_"+i),{uid:S.me.uid,data:u}));
+    b.set(col(C.issues).doc(id),{block:block,floor:floor,text:text,by:S.me.id,uid:S.me.uid,at:TS(),photos:pics.length,status:"open",fixedBy:null,fixedAt:null});
+    await b.commit();
+    pics.forEach((u,i)=>S.urls.set("i:"+id+"_"+i,u));
+    $("#iFloor").value=""; $("#iText").value=""; IP.clear(); say("#iMsg","",true);
+    ibusy=false; S.sheet=null; S.ifilter="open"; document.querySelector('input[name="iFilter"][value="open"]').checked=true;
+    if(location.hash!=="#issues") location.hash="#issues";
+    await reload(); return;
+  }catch(e){ say("#iMsg",e&&e.code==="permission-denied"?"ვერ შეინახა: წვდომა არ გაქვს.":"ვერ შეინახა. შეამოწმე ინტერნეტი და სცადე თავიდან.",false); }
+  ibusy=false; $("#iSave").disabled=false;
 });
 
 $("#userForm").addEventListener("submit",async ev=>{
