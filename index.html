@@ -312,6 +312,7 @@ const S={me:null,users:new Map(),settings:{site_name:"ობიექტის �
   day:[],mine:[],pending:[],urls:new Map(),date:today(),view:"today",sheet:null,loaded:false,error:"",photos:[]};
 const isManager=()=>!!S.me&&S.me.role==="manager";
 const isForeman=()=>!!S.me&&S.me.role==="foreman";
+const isViewer=()=>!!S.me&&S.me.role==="viewer";
 const nameOf=id=>(S.users.get(id)&&S.users.get(id).name)||"უცნობი";
 const isLate=()=>hourNow()>=S.settings.deadline_hour;
 const shownDay=()=>S.day.filter(e=>e.shown===true);
@@ -409,11 +410,11 @@ async function reload(){
       const D=dayInt(S.date), ent=col(C.entries);
       const dayQ=isManager()?ent.where("day","==",D):ent.where("shown","==",true).where("day","==",D);
       const [st,pp,tk,day,mine,pend]=await Promise.all([
-        getSettings(), col(C.people).get(), col(C.tasks).get(), dayQ.get(),
+        getSettings(), isViewer()?col(C.people).doc(S.me.id).get():col(C.people).get(), col(C.tasks).get(), dayQ.get(),
         isForeman()?ent.where("uid","==",S.me.uid).where("day","==",dayInt(today())).get():null,
         isManager()?ent.where("shown","==",null).get():null]);
       if(st) S.settings=st;
-      S.users=new Map(pp.docs.map(d=>[d.id,Object.assign({id:d.id},d.data())]));
+      S.users=new Map((pp.docs||(pp.exists?[pp]:[])).map(d=>[d.id,Object.assign({id:d.id},d.data())]));
       S.tasks=new Map(tk.docs.map(d=>[d.id,Object.assign({id:d.id},d.data())]));
       S.day=day.docs.map(mapEntry);
       S.mine=mine?mine.docs.map(mapEntry):[];
@@ -488,6 +489,9 @@ async function removeEntry(e){
   await reload();
 }
 function entryRow(e){
+  if(isViewer()) return h("div",{class:"entry"},
+    h("div",{class:"w",text:e.work}),
+    h("div",{class:"nums"},h("b",{text:fmt(e.pct)+"%"}),h("span",{class:"sub",text:fmt(e.workers)+" კაცი"})));
   const extra=[];
   let missing=false;
   photoKeys(e).forEach((k,i)=>{
@@ -541,7 +545,7 @@ function renderPending(need){
 }
 function renderMissing(){
   const box=$("#missing"); box.replaceChildren();
-  if(!S.loaded||S.date>today()) return;
+  if(!S.loaded||S.date>today()||isViewer()) return;
   const ids=[...S.users.values()].filter(u=>!u.deleted&&u.role==="foreman").map(u=>u.id);
   const done=new Set(shownDay().map(e=>e.by));
   const miss=ids.filter(id=>!done.has(id));
@@ -557,8 +561,8 @@ function renderToday(){
   const places=[...new Set(list.slice().sort(placeCmp).map(place))];
   const sm=$("#summary"); sm.replaceChildren();
   if(list.length){
-    const mat=list.filter(e=>e.material).length;
-    sm.append(h("b",{text:fmt(list.reduce((a,e)=>a+num(e.workers),0))})," კაცი · ",h("b",{text:places.length})," სართული",mat?" · ":null,mat?h("b",{text:mat}):null,mat?" მასალის მოთხოვნა":null);
+    const mat=isViewer()?0:list.filter(e=>e.material).length;
+    sm.append(...[h("b",{text:fmt(list.reduce((a,e)=>a+num(e.workers),0))})," კაცი · ",h("b",{text:places.length})," სართული",mat?" · ":null,mat?h("b",{text:mat}):null,mat?" მასალის მოთხოვნა":null].filter(x=>x!=null));
   }
   renderPending(need); renderMissing();
   const box=$("#todayList"); box.replaceChildren();
@@ -571,7 +575,7 @@ function renderToday(){
       h("div",{class:"gh"},h("b",{text:p}),h("span",{class:"sub",text:fmt(rows.reduce((a,e)=>a+num(e.workers),0))+" კაცი"})),
       h("div",{class:"list"},rows.map(entryRow))));
   }
-  ensureUrls(need);
+  if(!isViewer()) ensureUrls(need);
 }
 function renderFloors(){
   const box=$("#floorList"); box.replaceChildren();
@@ -583,7 +587,7 @@ function renderFloors(){
     const rows=tk.filter(t=>place(t)===p).sort((a,b)=>String(a.work).localeCompare(String(b.work))).map(t=>h("div",{class:"task"},
       h("div",{class:"row spread"},h("b",{text:t.work}),h("b",{text:fmt(t.pct)+"%"})),
       h("div",{class:"bar"+(t.pct>=100?" done":""),role:"img","aria-label":"შესრულება "+fmt(t.pct)+"%"},h("i",{style:"width:"+t.pct+"%"})),
-      h("div",{class:"sub",text:nameOf(t.by)+" · ბოლოს "+dayStr(t.day)})));
+      h("div",{class:"sub",text:(isViewer()?"":nameOf(t.by)+" · ")+"ბოლოს "+dayStr(t.day)})));
     box.append(h("div",{class:"group"},h("div",{class:"gh"},h("b",{text:p})),h("div",{class:"list"},rows)));
   }
 }
