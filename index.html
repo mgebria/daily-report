@@ -93,7 +93,10 @@ ul.plain li:last-child{border-bottom:0}
 #lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;padding:16px;z-index:10}
 #lightbox.on{display:flex}
 #lightbox img{max-width:100%;max-height:100%;border-radius:8px}
-#preview{max-width:140px;border-radius:10px;display:none}
+.pics{display:flex;flex-wrap:wrap;gap:8px}
+.pic{position:relative;width:76px;height:76px}
+.pic img{width:100%;height:100%;object-fit:cover;border-radius:10px;display:block}
+.pic button{position:absolute;top:-6px;right:-6px;width:26px;height:26px;padding:0;border-radius:50%;font-size:16px;line-height:1;background:var(--ink);color:var(--bg);border:0}
 .auth{max-width:420px;margin:0 auto;padding:48px 16px;display:flex;flex-direction:column;gap:16px}
 @media (prefers-reduced-motion:no-preference){.bar i{transition:width .3s}}
 </style>
@@ -185,10 +188,12 @@ ul.plain li:last-child{border-bottom:0}
         </div>
         <div class="sub" id="ePrev"></div>
         <label>მასალის საჭიროება (თუ საჭიროა)<input type="text" id="eMat" maxlength="200" placeholder="მაგ. 5 პალეტი ბლოკი"></label>
-        <label>ფოტო
-          <input type="file" id="ePhoto" accept="image/*">
-          <img id="preview" alt="არჩეული ფოტო">
-        </label>
+        <div class="stack" style="gap:8px">
+          <label for="ePhoto">ფოტოები</label>
+          <div class="pics" id="pics"></div>
+          <input type="file" id="ePhoto" accept="image/*" multiple>
+          <span class="sub" id="picNote"></span>
+        </div>
         <div class="note" id="lateNote" hidden></div>
         <label id="lateWrap" hidden>დაგვიანების მიზეზი<input type="text" id="eReason" maxlength="200"></label>
       </div>
@@ -285,7 +290,8 @@ const place=o=>o.block+" ბლოკი · "+o.floor+" სართული";
 const placeCmp=(a,b)=>String(a.block).localeCompare(String(b.block))||(b.floor-a.floor);
 const ord=(a,b)=>a.day-b.day||a.at-b.at;
 const keyOf=(b,f,w)=>encodeURIComponent(b+"|"+f+"|"+String(w).trim().toLowerCase());
-const JUMP=30;
+const JUMP=30, MAXPH=5;
+const photoKeys=e=>Array.from({length:Math.max(0,Math.min(MAXPH,e.photos||0))},(_,i)=>e.id+"_"+i);
 const WORKS=["ბლოკის წყობა","ბათქაში","არმირება","ყალიბის მოწყობა","ბეტონის ჩასხმა","მოჭიმვა","ელექტროობა","სანტექნიკა"];
 const ROLE={manager:"პროექტის მენეჯერი",foreman:"სამუშაოთა მწარმოებელი",viewer:"დამთვალიერებელი"};
 const cleanLogin=v=>String(v||"").trim().toLowerCase();
@@ -302,8 +308,8 @@ function errText(e){
 }
 
 let auth=null, db=null, TS=null;
-const S={me:null,users:new Map(),settings:{site_name:"ობიექტის დღიური",deadline_hour:10},tasks:new Map(),
-  day:[],mine:[],pending:[],urls:new Map(),date:today(),view:"today",sheet:null,loaded:false,error:"",photo:null};
+const S={me:null,users:new Map(),settings:{site_name:"ობიექტის დღიური",deadline_hour:11},tasks:new Map(),
+  day:[],mine:[],pending:[],urls:new Map(),date:today(),view:"today",sheet:null,loaded:false,error:"",photos:[]};
 const isManager=()=>!!S.me&&S.me.role==="manager";
 const isForeman=()=>!!S.me&&S.me.role==="foreman";
 const nameOf=id=>(S.users.get(id)&&S.users.get(id).name)||"უცნობი";
@@ -353,7 +359,7 @@ $("#setupForm").addEventListener("submit",async ev=>{
     const email=makeEmail(login);
     const cred=await auth.createUserWithEmailAndPassword(email,pass);
     const uid=cred.user.uid, pid=col(C.people).doc().id, b=db.batch();
-    b.set(col(C.settings).doc("main"),{site_name:"ობიექტის დღიური",deadline_hour:10});
+    b.set(col(C.settings).doc("main"),{site_name:"ობიექტის დღიური",deadline_hour:11});
     b.set(col(C.people).doc(pid),{name:name,login:login,role:"manager",deleted:false,uid:uid});
     b.set(col(C.accounts).doc(uid),{person:pid,role:"manager"});
     b.set(col(C.logins).doc(login),{email:email,role:"manager",person:pid});
@@ -389,7 +395,7 @@ async function enter(user){
 function mapEntry(d){
   const x=d.data()||{};
   return {id:d.id,by:x.author,uid:x.uid,task:x.task,block:x.block,floor:x.floor,work:x.work,day:x.day,date:dayStr(x.day),
-    workers:x.workers,pct:x.pct,prev:x.prev==null?null:x.prev,material:x.material||"",late:!!x.late,reason:x.reason||"",
+    workers:x.workers,pct:x.pct,photos:x.photos||0,prev:x.prev==null?null:x.prev,material:x.material||"",late:!!x.late,reason:x.reason||"",
     shown:x.shown===undefined?null:x.shown,excused:x.excused==null?null:x.excused,at:x.at&&x.at.toMillis?x.at.toMillis():Date.now()};
 }
 let reloading=false, again=false;
@@ -473,18 +479,23 @@ function delButton(fn){
 }
 async function removeEntry(e){
   const b=db.batch();
-  b.delete(col(C.entries).doc(e.id)); b.delete(col(C.photos).doc(e.id));
+  b.delete(col(C.entries).doc(e.id));
+  photoKeys(e).forEach(k=>b.delete(col(C.photos).doc(k)));
   await b.commit();
-  S.urls.delete(e.id);
+  photoKeys(e).forEach(k=>S.urls.delete(k));
   const t=S.tasks.get(e.task);
   if(t&&t.lastEntry===e.id){ try{ await recomputeTask(e.task); }catch(_){} }
   await reload();
 }
 function entryRow(e){
   const extra=[];
-  const url=S.urls.get(e.id);
-  if(url) extra.push(h("button",{type:"button",class:"thumb","aria-label":"ფოტოს გადიდება",onclick:()=>{$("#lightbox img").src=url;$("#lightbox").classList.add("on")}},h("img",{src:url,alt:"ფოტო: "+e.work,loading:"lazy"})));
-  else if(url==="") extra.push(h("span",{class:"tag",text:"ფოტო მიუწვდომელია"}));
+  let missing=false;
+  photoKeys(e).forEach((k,i)=>{
+    const url=S.urls.get(k);
+    if(url) extra.push(h("button",{type:"button",class:"thumb","aria-label":"ფოტო "+(i+1)+": გადიდება",onclick:()=>{$("#lightbox img").src=url;$("#lightbox").classList.add("on")}},h("img",{src:url,alt:"ფოტო "+(i+1)+": "+e.work,loading:"lazy"})));
+    else if(url==="") missing=true;
+  });
+  if(missing) extra.push(h("span",{class:"tag",text:"ფოტო მიუწვდომელია"}));
   if(e.material) extra.push(h("span",{class:"tag mat",text:"მასალა: "+e.material}));
   if(e.late){
     extra.push(h("span",{class:"tag flag",text:e.shown===null?"დაგვიანებული":"დაგვიანებული · "+(e.excused?"საპატიო":"არასაპატიო")}));
@@ -516,7 +527,7 @@ function renderPending(need){
   if(!list.length) return;
   box.append(h("h3",{text:"დაგვიანებული, შენს გადაწყვეტილებას ელოდება ("+list.length+")"}));
   for(const e of list){
-    need.push(e.id);
+    need.push(...photoKeys(e));
     if(!draft.has(e.id)) draft.set(e.id,{excused:false});
     const d=draft.get(e.id);
     const ex=h("input",{type:"checkbox",id:"ex-"+e.id}); ex.checked=d.excused; ex.onchange=()=>{d.excused=ex.checked};
@@ -555,7 +566,7 @@ function renderToday(){
   if(!list.length){ box.append(h("div",{class:"empty",text:"ამ დღეს ჩანაწერი არ არის."})); }
   for(const p of places){
     const rows=list.filter(e=>place(e)===p).sort((a,b)=>a.at-b.at);
-    rows.forEach(e=>need.push(e.id));
+    rows.forEach(e=>need.push(...photoKeys(e)));
     box.append(h("div",{class:"group"},
       h("div",{class:"gh"},h("b",{text:p}),h("span",{class:"sub",text:fmt(rows.reduce((a,e)=>a+num(e.workers),0))+" კაცი"})),
       h("div",{class:"list"},rows.map(entryRow))));
@@ -691,13 +702,23 @@ async function shrink(file){
   }
   throw new Error("too big");
 }
-function clearPhoto(){ S.photo=null; $("#ePhoto").value=""; $("#preview").style.display="none"; }
+function renderPics(){
+  const box=$("#pics"); box.replaceChildren();
+  S.photos.forEach((u,i)=>box.append(h("div",{class:"pic"},h("img",{src:u,alt:"ფოტო "+(i+1)}),
+    h("button",{type:"button","aria-label":"ფოტო "+(i+1)+" წაშლა",onclick:()=>{S.photos.splice(i,1);renderPics();}},"×"))));
+  $("#ePhoto").hidden=S.photos.length>=MAXPH;
+  $("#picNote").textContent=S.photos.length?S.photos.length+" / "+MAXPH:"მინიმუმ 1, მაქსიმუმ "+MAXPH+" ფოტო";
+}
+function clearPhoto(){ S.photos=[]; $("#ePhoto").value=""; renderPics(); }
 $("#ePhoto").onchange=async e=>{
-  const f=e.target.files&&e.target.files[0], pv=$("#preview"); S.photo=null; pv.style.display="none";
-  if(!f) return;
-  try{ S.photo=await shrink(f); pv.src=S.photo; pv.style.display="block"; say("#eMsg","",true); }
-  catch(_){ e.target.value=""; say("#eMsg","ეს ფოტო ვერ წაიკითხა. სცადე JPG ან PNG.",false); }
+  const files=[...(e.target.files||[])], room=MAXPH-S.photos.length;
+  e.target.value="";
+  let bad=0;
+  for(const f of files.slice(0,room)){ try{ S.photos.push(await shrink(f)); }catch(_){ bad++; } }
+  renderPics();
+  say("#eMsg",bad?"ზოგი ფოტო ვერ წაიკითხა. სცადე JPG ან PNG.":files.length>room?"მაქსიმუმ "+MAXPH+" ფოტო. დანარჩენი არ დაემატა.":"",!bad&&files.length<=room);
 };
+renderPics();
 
 $("#entryForm").addEventListener("submit",async ev=>{
   ev.preventDefault(); if(busy||!isForeman()) return;
@@ -707,19 +728,20 @@ $("#entryForm").addEventListener("submit",async ev=>{
   if(!block||!isFinite(floor)||!work){ say("#eMsg","შეავსე ბლოკი, სართული და სამუშაო.",false); return; }
   const late=isLate();
   if(late&&!reason){ say("#eMsg","ვადა გასულია. ჩაწერე დაგვიანების მიზეზი.",false); return; }
-  if(!S.photo){ say("#eMsg","დაურთე ფოტო. ფოტოს გარეშე ჩანაწერი არ ინახება.",false); return; }
+  if(!S.photos.length){ say("#eMsg","დაურთე მინიმუმ 1 ფოტო.",false); return; }
   busy=true; $("#eSave").disabled=true; say("#eMsg","ინახება…",true);
   try{
     const key=keyOf(block,floor,work), tRef=col(C.tasks).doc(key);
     const ts=await tRef.get(), prev=ts.exists?ts.data().pct:null;
     if(prev!=null&&pct<prev){ busy=false; say("#eMsg","პროცენტი ვერ იქნება წინაზე ("+prev+"%) ნაკლები. შესწორებისთვის მიმართე მენეჯერს.",false); renderSheet(); return; }
     const id=col(C.entries).doc().id, D=dayInt(today()), b=db.batch();
-    b.set(col(C.photos).doc(id),{uid:S.me.uid,data:S.photo});
+    const pics=S.photos.slice(0,MAXPH);
+    pics.forEach((u,i)=>b.set(col(C.photos).doc(id+"_"+i),{uid:S.me.uid,data:u}));
     b.set(col(C.entries).doc(id),{author:S.me.id,uid:S.me.uid,task:key,block:block,floor:floor,work:work,day:D,workers:workers,pct:pct,prev:prev,
-      material:material,late:late,reason:late?reason:"",shown:late?null:true,excused:null,at:TS(),photo:true});
+      material:material,late:late,reason:late?reason:"",shown:late?null:true,excused:null,at:TS(),photos:pics.length});
     if(!late) b.set(tRef,{pct:pct,lastEntry:id,block:block,floor:floor,work:work,by:S.me.id,day:D});
     await b.commit();
-    S.urls.set(id,S.photo);
+    pics.forEach((u,i)=>S.urls.set(id+"_"+i,u));
     $("#eFloor").value="";$("#eWork").value="";$("#eWorkers").value="";$("#ePct").value="";$("#eMat").value="";$("#eReason").value="";clearPhoto();
     say("#eMsg",late?"გაგზავნილია მენეჯერთან დასადასტურებლად.":"შენახულია. შეგიძლია შემდეგი სამუშაო დაამატო.",true);
   }catch(e){
